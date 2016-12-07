@@ -169,20 +169,25 @@ public class DeviceCommunicationService extends Service implements SharedPrefere
                     boolean enableReceivers = mDeviceSupport != null && (mDeviceSupport.useAutoConnect() || mGBDevice.isInitialized());
                     setReceiversEnableState(enableReceivers);
                     GB.updateNotification(mGBDevice.getName() + " " + mGBDevice.getStateString(), mGBDevice.isInitialized(), context);
-                    if (device.isInitialized() && (device.getType() != DeviceType.VIBRATISSIMO)) {
+
+                    if (device.isInitialized()) {
                         try (DBHandler dbHandler = GBApplication.acquireDB()) {
                             DaoSession session = dbHandler.getDaoSession();
-                            if (DBHelper.findDevice(device, session) == null) {
+                            boolean askForDBMigration = false;
+                            if (DBHelper.findDevice(device, session) == null && device.getType() != DeviceType.VIBRATISSIMO) {
+                                askForDBMigration = true;
+                            }
+                            DBHelper.getDevice(device, session); // implicitly creates the device in database if not present, and updates device attributes
+                            if (askForDBMigration) {
                                 DBHelper dbHelper = new DBHelper(context);
                                 if (dbHelper.getOldActivityDatabaseHandler() != null) {
-                                    DBHelper.getDevice(device, session); // implicitly creates it :P
                                     Intent startIntent = new Intent(context, OnboardingActivity.class);
                                     startIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                                     startIntent.putExtra(GBDevice.EXTRA_DEVICE, device);
                                     startActivity(startIntent);
                                 }
                             }
-                        } catch (Exception _ignore) {
+                        } catch (Exception ignore) {
                         }
                     }
                 } else {
@@ -426,11 +431,11 @@ public class DeviceCommunicationService extends Service implements SharedPrefere
                 break;
             case ACTION_SETMUSICSTATE:
                 MusicStateSpec stateSpec = new MusicStateSpec();
-                stateSpec.shuffle = intent.getByteExtra(EXTRA_MUSIC_SHUFFLE, (byte)0);
-                stateSpec.repeat = intent.getByteExtra(EXTRA_MUSIC_REPEAT, (byte)0);
+                stateSpec.shuffle = intent.getByteExtra(EXTRA_MUSIC_SHUFFLE, (byte) 0);
+                stateSpec.repeat = intent.getByteExtra(EXTRA_MUSIC_REPEAT, (byte) 0);
                 stateSpec.position = intent.getIntExtra(EXTRA_MUSIC_POSITION, 0);
                 stateSpec.playRate = intent.getIntExtra(EXTRA_MUSIC_RATE, 0);
-                stateSpec.state = intent.getByteExtra(EXTRA_MUSIC_STATE, (byte)0);
+                stateSpec.state = intent.getByteExtra(EXTRA_MUSIC_STATE, (byte) 0);
                 mDeviceSupport.onSetMusicState(stateSpec);
                 break;
             case ACTION_REQUEST_APPINFO:
@@ -639,7 +644,7 @@ public class DeviceCommunicationService extends Service implements SharedPrefere
 
         setDeviceSupport(null);
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        nm.cancel(GB.NOTIFICATION_ID); // need to do this because the updated notification wont be cancelled when service stops
+        nm.cancel(GB.NOTIFICATION_ID); // need to do this because the updated notification won't be cancelled when service stops
     }
 
     @Override

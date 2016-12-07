@@ -18,7 +18,7 @@ public class MiBand2Service {
     public static final UUID UUID_UNKNOWN_CHARACTERISTIC2 = UUID.fromString("00000002-0000-3512-2118-0009af100700");
     public static final UUID UUID_UNKNOWN_CHARACTERISTIC3 = UUID.fromString("00000003-0000-3512-2118-0009af100700"); // Alarm related
     public static final UUID UUID_UNKNOWN_CHARACTERISTIC4 = UUID.fromString("00000004-0000-3512-2118-0009af100700");
-    public static final UUID UUID_UNKNOWN_CHARACTERISTIC5 = UUID.fromString("00000005-0000-3512-2118-0009af100700");
+    public static final UUID UUID_CHARACTERISTIC_ACTIVITY_DATA = UUID.fromString("00000005-0000-3512-2118-0009af100700");
     public static final UUID UUID_UNKNOWN_CHARACTERISTIC6 = UUID.fromString("00000006-0000-3512-2118-0009af100700");
     public static final UUID UUID_UNKNOWN_CHARACTERISTIC7 = UUID.fromString("00000007-0000-3512-2118-0009af100700");
     public static final UUID UUID_UNKNOWN_CHARACTERISTIC8 = UUID.fromString("00000008-0000-3512-2118-0009af100700");
@@ -265,7 +265,7 @@ public class MiBand2Service {
      */
     public static final byte AUTH_RESPONSE = 0x10;
     /**
-     * Receeived in response to any authentication requests (byte 2 in the byte[] value.
+     * Received in response to any authentication requests (byte 2 in the byte[] value.
      * 0x01 means success.
      */
     public static final byte AUTH_SUCCESS = 0x01;
@@ -279,6 +279,13 @@ public class MiBand2Service {
      */
     public static final byte AUTH_BYTE = 0x8;
 
+    // maybe not really activity data, but steps?
+    public static final byte COMMAND_FETCH_ACTIVITY_DATA = 0x02;
+
+    public static final byte[] COMMAND_SET_FITNESS_GOAL_START = new byte[] { 0x10, 0x0, 0x0 };
+    public static final byte[] COMMAND_SET_FITNESS_GOAL_END = new byte[] { 0, 0 };
+
+
     public static byte COMMAND_DATEFORMAT = 0x06;
 
     public static final byte[] DATEFORMAT_DATE_TIME = new byte[] { COMMAND_DATEFORMAT, 0x0a, 0x0, 0x03 };
@@ -286,10 +293,15 @@ public class MiBand2Service {
 
     public static final byte RESPONSE = 0x10;
 
+    public static final byte SUCCESS = 0x01;
+    public static final byte COMMAND_ACTIVITY_DATA_START_DATE = 0x01;
+
+    public static final byte[] RESPONSE_FINISH_SUCCESS = new byte[] {RESPONSE, 2, SUCCESS };
     /**
      * Received in response to any dateformat configuration request (byte 0 in the byte[] value.
      */
     public static final byte[] RESPONSE_DATEFORMAT_SUCCESS = new byte[] { RESPONSE, COMMAND_DATEFORMAT, 0x0a, 0x0, 0x01 };
+    public static final byte[] RESPONSE_ACTIVITY_DATA_START_DATE_SUCCESS = new byte[] { RESPONSE, COMMAND_ACTIVITY_DATA_START_DATE, SUCCESS};
 
     public static final byte[] WEAR_LOCATION_LEFT_WRIST = new byte[] { 0x20, 0x00, 0x00, 0x02 };
     public static final byte[] WEAR_LOCATION_RIGHT_WRIST = new byte[] { 0x20, 0x00, 0x00, (byte) 0x82};

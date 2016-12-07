@@ -1,9 +1,6 @@
 package nodomain.freeyourgadget.gadgetbridge.service.devices.pebble.ble;
 
-import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
-import android.bluetooth.BluetoothGattServerCallback;
-import android.bluetooth.BluetoothManager;
 import android.content.Context;
 
 import org.slf4j.Logger;
@@ -13,16 +10,19 @@ import java.io.IOException;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
 
-public class PebbleLESupport extends BluetoothGattServerCallback {
+public class PebbleLESupport {
     private static final Logger LOG = LoggerFactory.getLogger(PebbleLESupport.class);
+    private final BluetoothDevice mBtDevice;
     private PipeReader mPipeReader;
     private PebbleGATTServer mPebbleGATTServer;
     private PebbleGATTClient mPebbleGATTClient;
     private PipedInputStream mPipedInputStream;
     private PipedOutputStream mPipedOutputStream;
+    private int mMTU = 20;
+    boolean mIsConnected = false;
 
-    public PebbleLESupport(Context context, final String btDeviceAddress, PipedInputStream pipedInputStream, PipedOutputStream pipedOutputStream) {
-
+    public PebbleLESupport(Context context, final BluetoothDevice btDevice, PipedInputStream pipedInputStream, PipedOutputStream pipedOutputStream) throws IOException {
+        mBtDevice = btDevice;
         mPipedInputStream = new PipedInputStream();
         mPipedOutputStream = new PipedOutputStream();
         try {
@@ -32,14 +32,21 @@ public class PebbleLESupport extends BluetoothGattServerCallback {
             LOG.warn("could not connect input stream");
         }
 
-        BluetoothManager manager = (BluetoothManager) context.getSystemService(Context.BLUETOOTH_SERVICE);
-        BluetoothAdapter adapter = manager.getAdapter();
-        BluetoothDevice btDevice = adapter.getRemoteDevice(btDeviceAddress);
-        mPebbleGATTServer = new PebbleGATTServer(this, context, btDevice);
-        mPebbleGATTServer.initialize();
-
-        mPebbleGATTClient = new PebbleGATTClient(context, btDevice);
-        mPebbleGATTClient.initialize();
+        mPebbleGATTServer = new PebbleGATTServer(this, context, mBtDevice);
+        if (mPebbleGATTServer.initialize()) {
+            mPebbleGATTClient = new PebbleGATTClient(this, context, mBtDevice);
+            try {
+                synchronized (this) {
+                    wait(30000);
+                    if (mIsConnected) {
+                        return;
+                    }
+                }
+            } catch (InterruptedException ignored) {
+            }
+        }
+        this.close();
+        throw new IOException("connection failed");
     }
 
     void writeToPipedOutputStream(byte[] value, int offset, int count) {
@@ -50,7 +57,7 @@ public class PebbleLESupport extends BluetoothGattServerCallback {
         }
     }
 
-    public void close() {
+    synchronized public void close() {
         destroyPipedInputReader();
         if (mPebbleGATTServer != null) {
             mPebbleGATTServer.close();
@@ -60,9 +67,17 @@ public class PebbleLESupport extends BluetoothGattServerCallback {
             mPebbleGATTClient.close();
             mPebbleGATTClient = null;
         }
+        try {
+            mPipedInputStream.close();
+        } catch (IOException ignore) {
+        }
+        try {
+            mPipedOutputStream.close();
+        } catch (IOException ignore) {
+        }
     }
 
-    void createPipedInputReader() {
+    synchronized void createPipedInputReader() {
         if (mPipeReader == null) {
             mPipeReader = new PipeReader();
         }
@@ -71,9 +86,8 @@ public class PebbleLESupport extends BluetoothGattServerCallback {
         }
     }
 
-    private void destroyPipedInputReader() {
+    synchronized private void destroyPipedInputReader() {
         if (mPipeReader != null) {
-            mPipeReader.quit();
             mPipeReader.interrupt();
             try {
                 mPipeReader.join();
@@ -84,16 +98,18 @@ public class PebbleLESupport extends BluetoothGattServerCallback {
         }
     }
 
+    void setMTU(int mtu) {
+        mMTU = mtu;
+    }
+
     private class PipeReader extends Thread {
         int mmSequence = 0;
-        private boolean mQuit = false;
 
         @Override
         public void run() {
-            int MTU = 339 - 3;
             byte[] buf = new byte[8192];
             int bytesRead;
-            while (!mQuit) {
+            while (true) {
                 try {
                     // this code is very similar to iothread, that is bad
                     // because we are the ones who prepared the buffer, there should be no
@@ -114,7 +130,7 @@ public class PebbleLESupport extends BluetoothGattServerCallback {
                     int payloadToSend = bytesRead + 4;
                     int srcPos = 0;
                     while (payloadToSend > 0) {
-                        int chunkSize = (payloadToSend < (MTU - 1)) ? payloadToSend : MTU - 1;
+                        int chunkSize = (payloadToSend < (mMTU - 4)) ? payloadToSend : mMTU - 4;
                         byte[] outBuf = new byte[chunkSize + 1];
                         outBuf[0] = (byte) ((mmSequence++ << 3) & 0xff);
                         System.arraycopy(buf, srcPos, outBuf, 1, chunkSize);
@@ -123,18 +139,33 @@ public class PebbleLESupport extends BluetoothGattServerCallback {
                         payloadToSend -= chunkSize;
                     }
 
-                } catch (IOException e) {
-                    LOG.warn("IO exception");
-                    mQuit = true;
+                    Thread.sleep(500); // FIXME ugly wait 0.5s after each pebble package send to the pebble (we do not wait for the GATT chunks)
+                } catch (IOException | InterruptedException e) {
+                    LOG.info(e.getMessage());
+                    Thread.currentThread().interrupt();
                     break;
                 }
             }
+            LOG.info("Pipereader thread shut down");
         }
 
-        void quit() {
-            mQuit = true;
+        @Override
+        public void interrupt() {
+            super.interrupt();
+            try {
+                LOG.info("closing piped inputstream");
+                mPipedInputStream.close();
+            } catch (IOException ignore) {
+            }
         }
     }
 
+    boolean isExpectedDevice(BluetoothDevice device) {
+        if (!device.getAddress().equals(mBtDevice.getAddress())) {
+            LOG.info("unhandled device: " + device.getAddress() + " , ignoring, will only talk to " + mBtDevice.getAddress());
+            return false;
+        }
+        return true;
+    }
 }
 

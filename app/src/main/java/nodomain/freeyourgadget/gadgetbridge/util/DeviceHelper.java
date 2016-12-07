@@ -8,7 +8,6 @@ import android.widget.Toast;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -47,16 +46,17 @@ public class DeviceHelper {
     // lazily created
     private List<DeviceCoordinator> coordinators;
 
-    public boolean isSupported(GBDeviceCandidate candidate) {
+    public DeviceType getSupportedType(GBDeviceCandidate candidate) {
         for (DeviceCoordinator coordinator : getAllCoordinators()) {
-            if (coordinator.supports(candidate)) {
-                return true;
+            DeviceType deviceType = coordinator.getSupportedType(candidate);
+            if (deviceType.isSupported()) {
+                return deviceType;
             }
         }
-        return false;
+        return DeviceType.UNKNOWN;
     }
 
-    public boolean isSupported(GBDevice device) {
+    public boolean getSupportedType(GBDevice device) {
         for (DeviceCoordinator coordinator : getAllCoordinators()) {
             if (coordinator.supports(device)) {
                 return true;
@@ -120,7 +120,7 @@ public class DeviceHelper {
     }
 
     public GBDevice toSupportedDevice(BluetoothDevice device) {
-        GBDeviceCandidate candidate = new GBDeviceCandidate(device, GBDevice.RSSI_UNKNOWN);
+        GBDeviceCandidate candidate = new GBDeviceCandidate(device, GBDevice.RSSI_UNKNOWN, device.getUuids());
 
         for (DeviceCoordinator coordinator : getAllCoordinators()) {
             if (coordinator.supports(candidate)) {
@@ -174,7 +174,7 @@ public class DeviceHelper {
             List<Device> activeDevices = DBHelper.getActiveDevices(lockHandler.getDaoSession());
             for (Device dbDevice : activeDevices) {
                 GBDevice gbDevice = toGBDevice(dbDevice);
-                if (gbDevice != null && DeviceHelper.getInstance().isSupported(gbDevice)) {
+                if (gbDevice != null && DeviceHelper.getInstance().getSupportedType(gbDevice)) {
                     result.add(gbDevice);
                 }
             }
@@ -192,7 +192,7 @@ public class DeviceHelper {
      * @param dbDevice
      * @return
      */
-    private GBDevice toGBDevice(Device dbDevice) {
+    public GBDevice toGBDevice(Device dbDevice) {
         DeviceType deviceType = DeviceType.fromKey(dbDevice.getType());
         GBDevice gbDevice = new GBDevice(dbDevice.getIdentifier(), dbDevice.getName(), deviceType);
         List<DeviceAttributes> deviceAttributesList = dbDevice.getDeviceAttributesList();
@@ -201,6 +201,7 @@ public class DeviceHelper {
             DeviceAttributes attrs = deviceAttributesList.get(0);
             gbDevice.setFirmwareVersion(attrs.getFirmwareVersion1());
             gbDevice.setFirmwareVersion2(attrs.getFirmwareVersion2());
+            gbDevice.setVolatileAddress(attrs.getVolatileIdentifier());
         }
 
         return gbDevice;
@@ -211,6 +212,9 @@ public class DeviceHelper {
         List<GBDevice> result = new ArrayList<>(pairedDevices.size());
         DeviceHelper deviceHelper = DeviceHelper.getInstance();
         for (BluetoothDevice pairedDevice : pairedDevices) {
+            if (pairedDevice.getName() != null && (pairedDevice.getName().startsWith("Pebble-LE ") || pairedDevice.getName().startsWith("Pebble Time LE "))) {
+                continue; // ignore LE Pebble (this is part of the main device now (volatileAddress)
+            }
             GBDevice device = deviceHelper.toSupportedDevice(pairedDevice);
             if (device != null) {
                 result.add(device);

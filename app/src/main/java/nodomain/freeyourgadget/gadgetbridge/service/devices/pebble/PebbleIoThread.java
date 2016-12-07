@@ -64,7 +64,7 @@ class PebbleIoThread extends GBDeviceIoThread {
     public static final String PEBBLEKIT_ACTION_APP_START = "com.getpebble.action.app.START";
     public static final String PEBBLEKIT_ACTION_APP_STOP = "com.getpebble.action.app.STOP";
 
-    final Prefs prefs = GBApplication.getPrefs();
+    private final Prefs prefs = GBApplication.getPrefs();
 
     private final PebbleProtocol mPebbleProtocol;
     private final PebbleSupport mPebbleSupport;
@@ -157,6 +157,14 @@ class PebbleIoThread extends GBDeviceIoThread {
         mEnablePebblekit = prefs.getBoolean("pebble_enable_pebblekit", false);
     }
 
+    private int readWithException(InputStream inputStream, byte[] buffer, int byteOffset, int byteCount) throws IOException {
+        int ret = inputStream.read(buffer, byteOffset, byteCount);
+        if (ret == -1) {
+            throw new IOException("broken pipe");
+        }
+        return ret;
+    }
+
     private void sendAppMessageAck(int transactionId) {
         Intent intent = new Intent();
         intent.setAction(PEBBLEKIT_ACTION_APP_RECEIVE_ACK);
@@ -166,27 +174,31 @@ class PebbleIoThread extends GBDeviceIoThread {
     }
 
     @Override
-    protected boolean connect(String btDeviceAddress) {
+    protected boolean connect() {
+        String deviceAddress = gbDevice.getAddress();
         GBDevice.State originalState = gbDevice.getState();
         gbDevice.setState(GBDevice.State.CONNECTING);
         gbDevice.sendDeviceUpdateIntent(getContext());
         try {
             // contains only one ":"? then it is addr:port
-            int firstColon = btDeviceAddress.indexOf(":");
-            if (firstColon == btDeviceAddress.lastIndexOf(":")) {
+            int firstColon = deviceAddress.indexOf(":");
+            if (firstColon == deviceAddress.lastIndexOf(":")) {
                 mIsTCP = true;
-                InetAddress serverAddr = InetAddress.getByName(btDeviceAddress.substring(0, firstColon));
-                mTCPSocket = new Socket(serverAddr, Integer.parseInt(btDeviceAddress.substring(firstColon + 1)));
+                InetAddress serverAddr = InetAddress.getByName(deviceAddress.substring(0, firstColon));
+                mTCPSocket = new Socket(serverAddr, Integer.parseInt(deviceAddress.substring(firstColon + 1)));
                 mInStream = mTCPSocket.getInputStream();
                 mOutStream = mTCPSocket.getOutputStream();
             } else {
                 mIsTCP = false;
-                BluetoothDevice btDevice = mBtAdapter.getRemoteDevice(btDeviceAddress);
+                if (gbDevice.getVolatileAddress() != null && prefs.getBoolean("pebble_force_le", false)) {
+                    deviceAddress = gbDevice.getVolatileAddress();
+                }
+                BluetoothDevice btDevice = mBtAdapter.getRemoteDevice(deviceAddress);
                 if (btDevice.getType() == BluetoothDevice.DEVICE_TYPE_LE) {
-                    LOG.info("Ok this seems to be a LE Pebble, try LE Support, trouble ahead!");
+                    LOG.info("This is a Pebble 2 or Pebble-LE/Pebble Time LE, will use BLE");
                     mInStream = new PipedInputStream();
                     mOutStream = new PipedOutputStream();
-                    mPebbleLESupport = new PebbleLESupport(this.getContext(),btDeviceAddress,(PipedInputStream)mInStream,(PipedOutputStream)mOutStream); // secret branch :P
+                    mPebbleLESupport = new PebbleLESupport(this.getContext(), btDevice, (PipedInputStream) mInStream, (PipedOutputStream) mOutStream);
                 } else {
                     ParcelUuid uuids[] = btDevice.getUuids();
                     if (uuids == null) {
@@ -224,9 +236,9 @@ class PebbleIoThread extends GBDeviceIoThread {
 
     @Override
     public void run() {
-        mIsConnected = connect(gbDevice.getAddress());
+        mIsConnected = connect();
         if (!mIsConnected) {
-            if (GBApplication.getGBPrefs().getAutoReconnect()) {
+            if (GBApplication.getGBPrefs().getAutoReconnect() && !mQuit) {
                 gbDevice.setState(GBDevice.State.WAITING_FOR_RECONNECT);
                 gbDevice.sendDeviceUpdateIntent(getContext());
             }
@@ -311,7 +323,7 @@ class PebbleIoThread extends GBDeviceIoThread {
                                 writeInstallApp(mPebbleProtocol.encodeInstallFirmwareComplete());
                                 finishInstall(false);
                             } else if (mPBWReader.isLanguage() || mPebbleProtocol.mFwMajor >= 3) {
-                                finishInstall(false); // FIXME: dont know yet how to detect success
+                                finishInstall(false); // FIXME: don't know yet how to detect success
                             } else {
                                 writeInstallApp(mPebbleProtocol.encodeAppRefresh(mInstallSlot));
                             }
@@ -323,10 +335,10 @@ class PebbleIoThread extends GBDeviceIoThread {
                 if (mIsTCP) {
                     mInStream.skip(6);
                 }
-                int bytes = mInStream.read(buffer, 0, 4);
+                int bytes = readWithException(mInStream, buffer, 0, 4);
 
                 while (bytes < 4) {
-                    bytes += mInStream.read(buffer, bytes, 4 - bytes);
+                    bytes += readWithException(mInStream, buffer, bytes, 4 - bytes);
                 }
 
                 ByteBuffer buf = ByteBuffer.wrap(buffer);
@@ -336,14 +348,14 @@ class PebbleIoThread extends GBDeviceIoThread {
                 if (length < 0 || length > 8192) {
                     LOG.info("invalid length " + length);
                     while (mInStream.available() > 0) {
-                        mInStream.read(buffer); // read all
+                        readWithException(mInStream, buffer, 0, buffer.length); // read all
                     }
                     continue;
                 }
 
-                bytes = mInStream.read(buffer, 4, length);
+                bytes = readWithException(mInStream, buffer, 4, length);
                 while (bytes < length) {
-                    bytes += mInStream.read(buffer, bytes + 4, length - bytes);
+                    bytes += readWithException(mInStream, buffer, bytes + 4, length - bytes);
                 }
 
                 if (mIsTCP) {
@@ -369,7 +381,7 @@ class PebbleIoThread extends GBDeviceIoThread {
                     e.printStackTrace();
                 }
             } catch (IOException e) {
-                if (e.getMessage() != null && e.getMessage().contains("socket closed")) { //FIXME: this does not feel right
+                if (e.getMessage() != null && (e.getMessage().equals("broken pipe") || e.getMessage().contains("socket closed"))) { //FIXME: this does not feel right
                     LOG.info(e.getMessage());
                     mIsConnected = false;
                     int reconnectAttempts = prefs.getInt("pebble_reconnect_attempts", 10);
@@ -380,7 +392,7 @@ class PebbleIoThread extends GBDeviceIoThread {
                         int delaySeconds = 1;
                         while (reconnectAttempts-- > 0 && !mQuit && !mIsConnected) {
                             LOG.info("Trying to reconnect (attempts left " + reconnectAttempts + ")");
-                            mIsConnected = connect(gbDevice.getAddress());
+                            mIsConnected = connect();
                             if (!mIsConnected) {
                                 try {
                                     Thread.sleep(delaySeconds * 1000);
@@ -461,7 +473,7 @@ class PebbleIoThread extends GBDeviceIoThread {
                 mOutStream.flush();
             }
         } catch (IOException e) {
-            LOG.error("Error writing.", e);
+            LOG.error("Error writing.", e.getMessage());
         }
         try {
             Thread.sleep(100);
@@ -488,6 +500,7 @@ class PebbleIoThread extends GBDeviceIoThread {
                 LOG.info("syncing time");
                 write(mPebbleProtocol.encodeSetTime());
             }
+            write(mPebbleProtocol.encodeEnableAppLogs(prefs.getBoolean("pebble_enable_applogs",false)));
             write(mPebbleProtocol.encodeReportDataLogSessions());
             gbDevice.setState(GBDevice.State.INITIALIZED);
             return false;
@@ -594,6 +607,10 @@ class PebbleIoThread extends GBDeviceIoThread {
         if (uri.equals(Uri.parse("fake://health"))) {
             write(mPebbleProtocol.encodeActivateHealth(true));
             write(mPebbleProtocol.encodeSetSaneDistanceUnit(true));
+            return;
+        }
+        if (uri.equals(Uri.parse("fake://hrm"))) {
+            write(mPebbleProtocol.encodeActivateHRM(true));
             return;
         }
 
@@ -707,16 +724,14 @@ class PebbleIoThread extends GBDeviceIoThread {
         if (mBtSocket != null) {
             try {
                 mBtSocket.close();
-            } catch (IOException e) {
-                e.printStackTrace();
+            } catch (IOException ignored) {
             }
             mBtSocket = null;
         }
         if (mTCPSocket != null) {
             try {
                 mTCPSocket.close();
-            } catch (IOException e) {
-                e.printStackTrace();
+            } catch (IOException ignored) {
             }
             mTCPSocket = null;
         }
